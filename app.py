@@ -822,40 +822,21 @@ with st.sidebar.expander("搜尋或新增股票", expanded=False):
         placeholder="例如：2330、1319、3491"
     )
 
-    new_market_choice = st.selectbox(
-        "上市 / 上櫃",
-        ["自動判斷", "上市 .TW", "上櫃 .TWO"]
-    )
-
     new_stock_name = st.text_input(
         "股票名稱",
         placeholder="例如：台積電"
     )
 
-    new_category = st.text_input(
-        "產業分類",
-        placeholder="例如：自訂候選、AI伺服器、低軌衛星 / LEO"
-    )
-
-    new_business = st.text_area(
-        "公司業務",
-        placeholder="例如：主要從事某某產品、某某服務。",
-        height=80
-    )
-
-    new_themes = st.text_input(
-        "題材標籤",
-        placeholder="例如：AI、儲能、無人機、低價觀察"
-    )
+    st.caption("只要輸入股票代號與股票名稱即可。系統會自動判斷上市 / 上櫃、產業分類與 symbol。")
 
     if st.button("加入候選清單"):
         ok, message, added_symbol = add_custom_stock(
             stock_code=new_stock_code,
-            market_choice=new_market_choice,
+            market_choice="自動判斷",
             name=new_stock_name,
-            category=new_category,
-            business=new_business,
-            themes=new_themes,
+            category="",
+            business="",
+            themes="",
         )
 
         if ok:
@@ -1073,6 +1054,576 @@ if "分數" in filtered_df.columns:
 # =========================
 # 主表格
 # =========================
+
+
+# =========================
+# 全市場異動股資料
+# =========================
+
+market_movement_path = "data/output/market_movement_top.csv"
+
+def _market_try_symbols(row):
+    symbol = str(row.get("symbol", "")).strip()
+    code = str(row.get("股票代號", "")).strip()
+    market = str(row.get("市場", "")).strip()
+
+    candidates = []
+
+    if symbol.endswith(".TW") or symbol.endswith(".TWO"):
+        candidates.append(symbol)
+
+    digits = "".join(ch for ch in code if ch.isdigit())
+
+    if len(digits) == 4:
+        if "上櫃" in market:
+            candidates.extend([f"{digits}.TWO", f"{digits}.TW"])
+        elif "上市" in market:
+            candidates.extend([f"{digits}.TW", f"{digits}.TWO"])
+        else:
+            candidates.extend([f"{digits}.TW", f"{digits}.TWO"])
+
+    result = []
+    for item in candidates:
+        if item and item not in result:
+            result.append(item)
+
+    return result
+
+
+def _fetch_market_stock_history(row):
+    try:
+        import yfinance as yf
+
+        for yf_symbol in _market_try_symbols(row):
+            hist = yf.download(
+                yf_symbol,
+                period="6mo",
+                interval="1d",
+                progress=False,
+                auto_adjust=False,
+                threads=False,
+            )
+
+            if hist is None or hist.empty:
+                continue
+
+            if isinstance(hist.columns, pd.MultiIndex):
+                hist.columns = hist.columns.get_level_values(0)
+
+            if "Close" not in hist.columns:
+                continue
+
+            hist = hist.dropna(subset=["Close"]).copy()
+
+            if len(hist) < 60:
+                continue
+
+            hist["MA10"] = hist["Close"].rolling(10).mean()
+            hist["MA20"] = hist["Close"].rolling(20).mean()
+            hist["MA60"] = hist["Close"].rolling(60).mean()
+
+            return yf_symbol, hist.tail(80).copy()
+
+        return None, pd.DataFrame()
+
+    except Exception as e:
+        st.warning(f"個股歷史資料抓取失敗：{e}")
+        return None, pd.DataFrame()
+
+
+def _make_svg_line_chart(hist):
+    if hist is None or hist.empty or "Close" not in hist.columns:
+        return ""
+
+    data = hist[["Close", "MA10", "MA20", "MA60"]].dropna().tail(60).copy()
+
+    if data.empty:
+        data = hist[["Close"]].dropna().tail(60).copy()
+
+    if data.empty:
+        return ""
+
+    width = 900
+    height = 260
+    padding_x = 42
+    padding_y = 28
+
+    values = []
+    for col in ["Close", "MA10", "MA20", "MA60"]:
+        if col in data.columns:
+            values.extend([float(v) for v in data[col].dropna().tolist()])
+
+    if not values:
+        return ""
+
+    min_v = min(values)
+    max_v = max(values)
+
+    if max_v == min_v:
+        max_v += 1
+        min_v -= 1
+
+    def x_pos(i, n):
+        if n <= 1:
+            return padding_x
+        return padding_x + i * (width - padding_x * 2) / (n - 1)
+
+    def y_pos(v):
+        return height - padding_y - (float(v) - min_v) * (height - padding_y * 2) / (max_v - min_v)
+
+    colors = {
+        "Close": "#111827",
+        "MA10": "#2563eb",
+        "MA20": "#16a34a",
+        "MA60": "#dc2626",
+    }
+
+    names = {
+        "Close": "收盤價",
+        "MA10": "MA10",
+        "MA20": "MA20",
+        "MA60": "MA60",
+    }
+
+    svg_parts = [
+        f'<svg viewBox="0 0 {width} {height}" width="100%" height="{height}" xmlns="http://www.w3.org/2000/svg">',
+        '<rect x="0" y="0" width="100%" height="100%" fill="#ffffff" rx="12"/>',
+        f'<line x1="{padding_x}" y1="{height-padding_y}" x2="{width-padding_x}" y2="{height-padding_y}" stroke="#e5e7eb"/>',
+        f'<line x1="{padding_x}" y1="{padding_y}" x2="{padding_x}" y2="{height-padding_y}" stroke="#e5e7eb"/>',
+    ]
+
+    for idx, level in enumerate([min_v, (min_v + max_v) / 2, max_v]):
+        y = y_pos(level)
+        svg_parts.append(f'<line x1="{padding_x}" y1="{y:.1f}" x2="{width-padding_x}" y2="{y:.1f}" stroke="#f3f4f6"/>')
+        svg_parts.append(f'<text x="6" y="{y+4:.1f}" font-size="11" fill="#6b7280">{level:.1f}</text>')
+
+    for col in ["Close", "MA10", "MA20", "MA60"]:
+        if col not in data.columns:
+            continue
+
+        series = data[col].dropna()
+
+        if series.empty:
+            continue
+
+        points = []
+        n = len(data)
+
+        for i, (_, row) in enumerate(data.iterrows()):
+            v = row.get(col, None)
+            if pd.isna(v):
+                continue
+            points.append(f"{x_pos(i, n):.1f},{y_pos(v):.1f}")
+
+        if len(points) >= 2:
+            svg_parts.append(
+                f'<polyline points="{" ".join(points)}" fill="none" stroke="{colors[col]}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>'
+            )
+
+    legend_x = padding_x
+    legend_y = 18
+
+    for i, col in enumerate(["Close", "MA10", "MA20", "MA60"]):
+        if col in data.columns:
+            x = legend_x + i * 95
+            svg_parts.append(f'<rect x="{x}" y="{legend_y-9}" width="10" height="10" fill="{colors[col]}" rx="2"/>')
+            svg_parts.append(f'<text x="{x+15}" y="{legend_y}" font-size="12" fill="#374151">{names[col]}</text>')
+
+    svg_parts.append("</svg>")
+
+    return "\n".join(svg_parts)
+
+
+def _calc_snipe_points(hist):
+    if hist is None or hist.empty:
+        return None
+
+    latest = hist.dropna(subset=["Close"]).iloc[-1]
+
+    close_price = float(latest["Close"])
+    ma10 = float(latest["MA10"])
+    ma20 = float(latest["MA20"])
+    ma60 = float(latest["MA60"])
+
+    entry = round(ma10 * 1.005, 2)
+    sl = round(ma20 * 0.98, 2)
+    risk = entry - sl
+
+    if risk <= 0:
+        tp = 0
+        rr = 0
+    else:
+        tp = round(entry + risk * 2, 2)
+        rr = round((tp - entry) / risk, 2)
+
+    return {
+        "close": close_price,
+        "ma10": ma10,
+        "ma20": ma20,
+        "ma60": ma60,
+        "entry": entry,
+        "sl": sl,
+        "tp": tp,
+        "rr": rr,
+        "risk": risk,
+    }
+
+
+def _render_market_fibo_section(hist):
+    if hist is None or hist.empty or "Close" not in hist.columns:
+        st.info("歷史資料不足，無法計算 Fibonacci 回測區。")
+        return
+
+    data = hist.dropna(subset=["Close"]).tail(60).copy()
+
+    if data.empty or len(data) < 20:
+        st.info("近 60 日資料不足，無法計算 Fibonacci 回測區。")
+        return
+
+    swing_high = float(data["Close"].max())
+    swing_low = float(data["Close"].min())
+    latest_close = float(data["Close"].iloc[-1])
+
+    high_date = data["Close"].idxmax()
+    low_date = data["Close"].idxmin()
+
+    price_range = swing_high - swing_low
+
+    if price_range <= 0:
+        st.info("近 60 日波段高低點差距不足，無法計算 Fibonacci。")
+        return
+
+    fib_ratios = [0.236, 0.382, 0.5, 0.618, 0.786]
+
+    fib_levels = []
+    for ratio in fib_ratios:
+        level = swing_high - price_range * ratio
+        fib_levels.append({
+            "Fibo": f"{ratio:.3f}",
+            "價格": round(level, 2),
+        })
+
+    latest = data.iloc[-1]
+
+    ma_values = {}
+    for ma_name in ["MA10", "MA20", "MA60"]:
+        if ma_name in data.columns and pd.notna(latest.get(ma_name, None)):
+            ma_values[ma_name] = float(latest[ma_name])
+
+    st.markdown("#### 🧮 Fibonacci 回測參考區（近 60 日波段）")
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("近60日高點", f"{swing_high:.2f}")
+    c2.metric("近60日低點", f"{swing_low:.2f}")
+    c3.metric("目前收盤", f"{latest_close:.2f}")
+    c4.metric("波段幅度", f"{price_range:.2f}")
+
+    st.caption(f"波段計算：以近 60 日收盤價高點 {swing_high:.2f} 與低點 {swing_low:.2f} 推估回測位置。")
+
+    # 產出 Fibo 表格
+    fib_table = pd.DataFrame(fib_levels)
+
+    if ma_values:
+        overlap_notes = []
+        tolerance_pct = 0.012
+
+        for fib in fib_levels:
+            fib_name = fib["Fibo"]
+            fib_price = float(fib["價格"])
+
+            for ma_name, ma_price in ma_values.items():
+                distance_pct = abs(fib_price - ma_price) / fib_price if fib_price else 999
+
+                if distance_pct <= tolerance_pct:
+                    overlap_notes.append({
+                        "Fibo": fib_name,
+                        "Fibo價格": round(fib_price, 2),
+                        "均線": ma_name,
+                        "均線價格": round(ma_price, 2),
+                        "差距%": round(distance_pct * 100, 2),
+                    })
+
+        st.markdown("##### 📐 Fibo 分割價位")
+
+        if "show_html_table" in globals():
+            show_html_table(fib_table)
+        else:
+            st.markdown(fib_table.to_html(index=False, escape=False), unsafe_allow_html=True)
+
+        st.markdown("##### 🎯 均線與 Fibo 重疊偵測")
+
+        if overlap_notes:
+            for note in overlap_notes:
+                st.success(
+                    f'{note["Fibo"]}（{note["Fibo價格"]}）與 {note["均線"]}（{note["均線價格"]}）重疊 '
+                    f'→ 強支撐區，差距約 {note["差距%"]}%'
+                )
+        else:
+            st.info("目前沒有明顯的均線與 Fibo 重疊支撐區。")
+
+    else:
+        st.markdown("##### 📐 Fibo 分割價位")
+
+        if "show_html_table" in globals():
+            show_html_table(fib_table)
+        else:
+            st.markdown(fib_table.to_html(index=False, escape=False), unsafe_allow_html=True)
+
+        st.info("目前缺少 MA10 / MA20 / MA60，無法偵測均線與 Fibo 重疊。")
+
+    # 價格位置判讀
+    fib_382 = swing_high - price_range * 0.382
+    fib_500 = swing_high - price_range * 0.5
+    fib_618 = swing_high - price_range * 0.618
+
+    st.markdown("##### 🧠 目前位置解讀")
+
+    if latest_close >= fib_382:
+        st.success(f"目前股價在 0.382 回測位 {fib_382:.2f} 之上，代表短線仍偏強。")
+    elif latest_close >= fib_500:
+        st.warning(f"目前股價位於 0.382～0.5 區間，屬於健康回測區，但要觀察量縮與止跌。")
+    elif latest_close >= fib_618:
+        st.warning(f"目前股價回測到 0.5～0.618 區間，這是關鍵支撐區，跌破後結構會轉弱。")
+    else:
+        st.error(f"目前股價已跌破 0.618 回測位 {fib_618:.2f}，波段結構偏弱，不適合追價。")
+
+
+
+if os.path.exists(market_movement_path):
+    market_df = pd.read_csv(market_movement_path)
+
+    if market_df.empty:
+        st.info("目前沒有全市場異動股資料。")
+    else:
+        number_cols = [
+            "收盤價",
+            "漲跌幅%",
+            "成交量張數",
+            "近20日均量張數",
+            "量增倍率",
+            "成交值百萬",
+            "異動分",
+        ]
+
+        for col in number_cols:
+            if col in market_df.columns:
+                market_df[col] = pd.to_numeric(market_df[col], errors="coerce")
+
+        latest_date = ""
+        if "資料日期" in market_df.columns and not market_df["資料日期"].empty:
+            latest_date = str(market_df["資料日期"].iloc[0])
+
+        top_names = []
+        for _, r in market_df.head(3).iterrows():
+            top_names.append(f'{r.get("股票代號", "")} {r.get("股票名稱", "")}')
+
+        top_text = "、".join(top_names) if top_names else "尚無資料"
+
+        with st.expander(
+            f"🚨 全市場異動股｜{latest_date}｜共 {len(market_df)} 檔｜Top：{top_text}",
+            expanded=False,
+        ):
+            st.caption("這裡不是單純股票名單。點選個股後，可以看到異動原因、狙擊點位與近 60 日歷史走勢。")
+
+            rank_options = {
+                "異動分排行": "異動分",
+                "漲幅排行": "漲跌幅%",
+                "成交量排行": "成交量張數",
+                "成交值排行": "成交值百萬",
+                "量增倍率排行": "量增倍率",
+            }
+
+            rank_name = st.selectbox(
+                "選擇排行方式",
+                list(rank_options.keys()),
+                key="market_movement_rank_select",
+            )
+
+            sort_col = rank_options[rank_name]
+
+            show_count = st.slider(
+                "顯示檔數",
+                min_value=10,
+                max_value=50,
+                value=20,
+                step=5,
+                key="market_movement_show_count",
+            )
+
+            show_df = market_df.copy()
+
+            if sort_col in show_df.columns:
+                show_df = show_df.sort_values(sort_col, ascending=False)
+
+            show_df = show_df.head(show_count).copy()
+            show_df.insert(0, "排名", range(1, len(show_df) + 1))
+
+            table_cols = [
+                "排名",
+                "市場",
+                "股票代號",
+                "股票名稱",
+                "收盤價",
+                "漲跌幅%",
+                "量增倍率",
+                "成交量張數",
+                "成交值百萬",
+                "異動分",
+            ]
+
+            existing_cols = [col for col in table_cols if col in show_df.columns]
+            table_df = show_df[existing_cols].copy()
+
+            format_map = {
+                "收盤價": "{:.2f}",
+                "漲跌幅%": "{:.2f}%",
+                "量增倍率": "{:.2f}x",
+                "成交量張數": "{:.0f}",
+                "成交值百萬": "{:.1f}",
+                "異動分": "{:.1f}",
+            }
+
+            for col, fmt in format_map.items():
+                if col in table_df.columns:
+                    table_df[col] = table_df[col].apply(lambda x: "" if pd.isna(x) else fmt.format(x))
+
+            st.markdown("#### 📋 異動排行清單")
+
+            if "show_html_table" in globals():
+                show_html_table(table_df)
+            else:
+                st.markdown(table_df.to_html(index=False, escape=False), unsafe_allow_html=True)
+
+            st.markdown("#### 🔍 個股詳細資料")
+
+            option_labels = []
+            option_map = {}
+
+            for _, r in show_df.iterrows():
+                code = str(r.get("股票代號", ""))
+                name = str(r.get("股票名稱", ""))
+                pct = r.get("漲跌幅%", None)
+                ratio = r.get("量增倍率", None)
+                value_m = r.get("成交值百萬", None)
+
+                pct_text = "" if pd.isna(pct) else f"{pct:.2f}%"
+                ratio_text = "" if pd.isna(ratio) else f"{ratio:.2f}x"
+                value_text = "" if pd.isna(value_m) else f"{value_m:.1f}百萬"
+
+                label = f"{code} {name}｜漲跌幅 {pct_text}｜量增 {ratio_text}｜成交值 {value_text}"
+                option_labels.append(label)
+                option_map[label] = r
+
+            if option_labels:
+                selected_label = st.selectbox(
+                    "選一檔股票看完整資料",
+                    option_labels,
+                    key="market_movement_stock_detail_select",
+                )
+
+                selected = option_map[selected_label]
+
+                st.markdown(f'### {selected.get("股票代號", "")} {selected.get("股票名稱", "")}')
+
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("收盤價", f'{selected.get("收盤價", 0):.2f}')
+                c2.metric("漲跌幅", f'{selected.get("漲跌幅%", 0):.2f}%')
+                c3.metric("量增倍率", f'{selected.get("量增倍率", 0):.2f}x')
+                c4.metric("異動分", f'{selected.get("異動分", 0):.1f}')
+
+                c5, c6, c7, c8 = st.columns(4)
+                c5.metric("成交量張數", f'{selected.get("成交量張數", 0):.0f}')
+                c6.metric("近20日均量", f'{selected.get("近20日均量張數", 0):.0f}')
+                c7.metric("成交值百萬", f'{selected.get("成交值百萬", 0):.1f}')
+                c8.metric("市場", str(selected.get("市場", "")))
+
+                st.markdown("#### 🧠 為什麼它出現在名單？")
+
+                reasons = []
+
+                pct = selected.get("漲跌幅%", 0)
+                ratio = selected.get("量增倍率", 0)
+                volume = selected.get("成交量張數", 0)
+                value_m = selected.get("成交值百萬", 0)
+
+                if pd.notna(pct) and pct >= 7:
+                    reasons.append("漲幅明顯，短線資金正在推動。")
+                elif pd.notna(pct) and pct >= 3:
+                    reasons.append("股價漲幅有表現，開始出現攻擊性。")
+
+                if pd.notna(ratio) and ratio >= 2:
+                    reasons.append("量增倍率超過 2 倍，成交量明顯放大。")
+                elif pd.notna(ratio) and ratio >= 1.5:
+                    reasons.append("量能高於近期均量，市場關注度上升。")
+
+                if pd.notna(volume) and volume >= 10000:
+                    reasons.append("成交量超過 1 萬張，流動性足夠。")
+
+                if pd.notna(value_m) and value_m >= 1000:
+                    reasons.append("成交值超過 10 億元，屬於較明顯資金流入標的。")
+                elif pd.notna(value_m) and value_m >= 300:
+                    reasons.append("成交值達 3 億元以上，有一定資金參與。")
+
+                if not reasons:
+                    reasons.append("主要因綜合異動分進入名單，需要再搭配 K 線與籌碼確認。")
+
+                for reason in reasons:
+                    st.markdown(f"- {reason}")
+
+                st.markdown("#### 🎯 狙擊點位分析")
+
+                used_symbol, hist = _fetch_market_stock_history(selected)
+
+                if hist is not None and not hist.empty:
+                    snipe = _calc_snipe_points(hist)
+
+                    if snipe:
+                        st.caption(f"歷史資料來源：yfinance，代號 {used_symbol}")
+
+                        s1, s2, s3, s4 = st.columns(4)
+                        s1.metric("進場觀察價", f'{snipe["entry"]:.2f}')
+                        s2.metric("停損觀察價 SL", f'{snipe["sl"]:.2f}')
+                        s3.metric("停利觀察價 TP", f'{snipe["tp"]:.2f}')
+                        s4.metric("風報比 RR", f'1 : {snipe["rr"]}')
+
+                        if snipe["risk"] <= 0:
+                            st.warning("目前 MA10 與 MA20 結構不適合用這組進出場點位。")
+                        elif snipe["rr"] < 2:
+                            st.warning("風報比低於 1 : 2，追價風險較高，等待回測會更安全。")
+                        else:
+                            st.success("風報比達 1 : 2 以上，具備基本觀察條件。")
+
+                        if snipe["close"] > snipe["ma60"]:
+                            st.success("位置：股價站上 MA60，結構相對健康。")
+                        else:
+                            st.warning("位置：股價仍在 MA60 下方，結構偏弱。")
+
+                        if snipe["ma10"] > snipe["ma20"] > snipe["ma60"]:
+                            st.success("趨勢：MA10 > MA20 > MA60，均線多頭排列。")
+                        elif snipe["ma10"] < snipe["ma20"]:
+                            st.warning("趨勢：MA10 低於 MA20，短線結構尚未轉強。")
+                        else:
+                            st.warning("趨勢：均線仍在整理，方向尚未完全明確。")
+
+                    _render_market_fibo_section(hist)
+
+                    st.markdown("#### 📈 近 60 日歷史走勢")
+
+                    svg = _make_svg_line_chart(hist)
+
+                    if svg:
+                        st.markdown(svg, unsafe_allow_html=True)
+                    else:
+                        st.info("歷史走勢資料不足，無法繪製走勢。")
+
+                else:
+                    st.info("抓不到這檔股票的歷史資料，暫時無法顯示狙擊點位與歷史走勢。")
+
+                st.caption("提醒：全市場異動股只是幫你找出今天市場有動靜的股票，不等於可以直接進場。實際操作仍要搭配籌碼、型態、支撐壓力與大盤風險。")
+
+else:
+    with st.expander("🚨 全市場異動股｜尚未產生", expanded=False):
+        st.info("尚未找到 data/output/market_movement_top.csv。請先執行：python run_dashboard_data.py --mode market")
 
 st.subheader("📋 每日篩選結果")
 
