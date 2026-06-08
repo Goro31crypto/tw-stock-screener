@@ -580,7 +580,7 @@ def draw_svg_score_history(history_df: pd.DataFrame, stock_id: str):
 # 頁面標題
 # =========================
 
-st.title("📊 台股篩選系統")
+st.title("台股篩選系統")
 
 
 # ===== 全市場法人買賣超排行榜 =====
@@ -648,7 +648,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-with st.expander("🏆 全市場法人買賣超排行榜", expanded=False):
+with st.expander("全市場法人買賣超排行榜", expanded=False):
     try:
         ranking_df = load_market_chip_ranking()
 
@@ -704,7 +704,7 @@ with st.expander("🏆 全市場法人買賣超排行榜", expanded=False):
 # ===== 最近執行狀態 =====
 RUN_LOG_PATH = "data/history/run_log.csv"
 
-with st.expander("🧾 最近執行狀態", expanded=False):
+with st.expander("最近執行狀態", expanded=False):
     try:
         if os.path.exists(RUN_LOG_PATH):
             run_log_df = pd.read_csv(RUN_LOG_PATH)
@@ -720,7 +720,7 @@ with st.expander("🧾 最近執行狀態", expanded=False):
                 margin_limit_count = int(latest_run.get("margin_limit_count", 0))
                 did_output = str(latest_run.get("did_output", "")).lower() in ["true", "1", "yes"]
 
-                st.markdown("### 🧾 最近執行狀態")
+                st.markdown("### 最近執行狀態")
 
                 run_col1, run_col2, run_col3, run_col4, run_col5 = st.columns(5)
 
@@ -1215,14 +1215,14 @@ st.write(f"**題材標籤：** {stock_row.get('題材標籤', '')}")
 # 技術與籌碼判讀
 # =========================
 
-st.markdown("### 📈 技術與籌碼判讀")
+st.markdown("### 技術與籌碼判讀")
 
 system_text = stock_row.get("系統解讀", "")
 
 if pd.isna(system_text) or system_text == "":
-    st.info("目前沒有明確系統解讀")
+    st.caption("目前沒有明確系統解讀")
 else:
-    st.write(system_text)
+    st.markdown(f'''<div style="font-size:13px;color:#444;background:#f9f9f9;border-left:3px solid #ccc;padding:10px 14px;border-radius:4px;line-height:1.8;">{system_text}</div>''', unsafe_allow_html=True)
 
 risk_text = stock_row.get("風險標註", "")
 
@@ -1236,10 +1236,14 @@ else:
 # 新聞標註
 # =========================
 
-st.markdown("### 📰 近期新聞標註")
+st.markdown("### 近期新聞標註")
 
-st.write(f"**新聞傾向：** {stock_row.get('新聞傾向', '')}")
-st.write(f"**新聞題材：** {stock_row.get('新聞題材', '')}")
+_news_direction = stock_row.get('新聞傾向', '')
+_news_theme = stock_row.get('新聞題材', '')
+_news_direction = '—' if (str(_news_direction).strip() in ['', 'nan', 'NaN']) else _news_direction
+_news_theme = '—' if (str(_news_theme).strip() in ['', 'nan', 'NaN']) else _news_theme
+st.markdown(f"**新聞傾向：** {_news_direction}")
+st.markdown(f"**新聞題材：** {_news_theme}")
 
 news_summary = stock_row.get("新聞摘要", "")
 
@@ -1266,7 +1270,7 @@ if not pd.isna(news_links) and news_links != "":
 # 原始條件資料
 # =========================
 
-st.markdown("### 📊 原始條件資料")
+st.markdown("### 原始條件資料")
 
 tab1, tab2, tab3 = st.tabs(["技術面", "法人籌碼", "融資融券"])
 
