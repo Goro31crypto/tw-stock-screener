@@ -14,10 +14,80 @@ from services.watchlist_service import add_custom_stock
 
 
 st.set_page_config(
+
+
+
     page_title="台股篩選系統",
     page_icon="📊",
     layout="wide"
 )
+
+
+# =========================
+# 表格顏色修正：避免偶數列白字看不到
+# =========================
+st.markdown("""
+<style>
+/* FORCE_TABLE_VISIBILITY_FIX */
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    background-color: #ffffff !important;
+}
+
+thead tr,
+table thead tr,
+table th {
+    background-color: #111827 !important;
+    color: #ffffff !important;
+    font-weight: 700 !important;
+}
+
+tbody tr:nth-child(odd),
+table tbody tr:nth-child(odd) {
+    background-color: #ffffff !important;
+    color: #111827 !important;
+}
+
+tbody tr:nth-child(even),
+table tbody tr:nth-child(even) {
+    background-color: #f3f4f6 !important;
+    color: #111827 !important;
+}
+
+table td,
+tbody td {
+    color: #111827 !important;
+    border-bottom: 1px solid #d1d5db !important;
+    padding: 8px 10px !important;
+}
+
+table th {
+    border-bottom: 1px solid #374151 !important;
+    padding: 9px 10px !important;
+}
+
+.dataframe {
+    color: #111827 !important;
+    background-color: #ffffff !important;
+}
+
+.dataframe td {
+    color: #111827 !important;
+}
+
+.dataframe tr:nth-child(even) td {
+    background-color: #f3f4f6 !important;
+}
+
+.dataframe tr:nth-child(odd) td {
+    background-color: #ffffff !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
 
 
 # =========================
