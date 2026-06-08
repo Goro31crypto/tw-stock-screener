@@ -1236,6 +1236,243 @@ else:
 # 新聞標註
 # =========================
 
+
+# =========================
+# 狙擊點位分析
+# =========================
+
+st.markdown("### 🎯 狙擊點位分析")
+
+# 這個區塊只做「觀察用點位估算」，不等於買賣建議。
+_snipe_row = None
+
+for _candidate_name in ["stock_row", "selected_row", "selected_stock_row", "row"]:
+    _candidate = locals().get(_candidate_name)
+    if hasattr(_candidate, "get"):
+        _snipe_row = _candidate
+        break
+
+
+def _pick_value(row, names):
+    if row is None:
+        return None
+
+    for name in names:
+        try:
+            value = row.get(name, None)
+        except Exception:
+            value = None
+
+        if value is not None and pd.notna(value):
+            return value
+
+    return None
+
+
+def _normalize_tw_symbol(raw_symbol, market=None):
+    if raw_symbol is None:
+        return []
+
+    symbol = str(raw_symbol).strip()
+
+    if symbol == "":
+        return []
+
+    if symbol.endswith(".TW") or symbol.endswith(".TWO"):
+        return [symbol]
+
+    digits = "".join(ch for ch in symbol if ch.isdigit())
+
+    if len(digits) != 4:
+        return []
+
+    market_text = str(market or "")
+
+    if "上櫃" in market_text:
+        return [f"{digits}.TWO", f"{digits}.TW"]
+
+    if "上市" in market_text:
+        return [f"{digits}.TW", f"{digits}.TWO"]
+
+    # 如果不知道上市/上櫃，就兩個都試
+    return [f"{digits}.TW", f"{digits}.TWO"]
+
+
+def _fetch_snipe_ma(symbol):
+    try:
+        import yfinance as yf
+
+        hist = yf.download(
+            symbol,
+            period="6mo",
+            interval="1d",
+            progress=False,
+            auto_adjust=False,
+            threads=False,
+        )
+
+        if hist is None or hist.empty:
+            return None
+
+        if isinstance(hist.columns, pd.MultiIndex):
+            hist.columns = hist.columns.get_level_values(0)
+
+        if "Close" not in hist.columns:
+            return None
+
+        hist = hist.dropna(subset=["Close"]).copy()
+
+        if len(hist) < 60:
+            return None
+
+        close_price = float(hist["Close"].iloc[-1])
+        ma10 = float(hist["Close"].rolling(10).mean().iloc[-1])
+        ma20 = float(hist["Close"].rolling(20).mean().iloc[-1])
+        ma60 = float(hist["Close"].rolling(60).mean().iloc[-1])
+
+        return {
+            "close_price": close_price,
+            "ma10": ma10,
+            "ma20": ma20,
+            "ma60": ma60,
+        }
+
+    except Exception as e:
+        st.warning(f"即時均線資料抓取失敗：{e}")
+        return None
+
+
+if _snipe_row is None:
+    st.info("尚未找到個股資料列，無法計算狙擊點位。")
+else:
+    close_price = _pick_value(_snipe_row, ["收盤價", "Close", "close", "最新收盤價"])
+    ma10 = _pick_value(_snipe_row, ["MA10", "10日均線", "ma10"])
+    ma20 = _pick_value(_snipe_row, ["MA20", "20日均線", "ma20"])
+    ma60 = _pick_value(_snipe_row, ["MA60", "60日均線", "ma60"])
+
+    symbol_raw = _pick_value(_snipe_row, ["symbol", "股票代號", "代號", "股票代碼"])
+    market = _pick_value(_snipe_row, ["市場", "上市櫃", "交易市場"])
+
+    # 如果 Excel 沒有 MA10 / MA20 / MA60，就用 yfinance 即時計算。
+    if not (pd.notna(close_price) and pd.notna(ma10) and pd.notna(ma20) and pd.notna(ma60)):
+        yf_symbols = _normalize_tw_symbol(symbol_raw, market)
+        fetched = None
+        used_symbol = None
+
+        for yf_symbol in yf_symbols:
+            fetched = _fetch_snipe_ma(yf_symbol)
+            if fetched:
+                used_symbol = yf_symbol
+                break
+
+        if fetched:
+            close_price = fetched["close_price"]
+            ma10 = fetched["ma10"]
+            ma20 = fetched["ma20"]
+            ma60 = fetched["ma60"]
+            st.caption(f"均線資料來源：yfinance 即時計算，代號 {used_symbol}")
+        else:
+            st.caption(f"已嘗試 yfinance 代號：{yf_symbols}，但沒有成功取得 60 日以上資料。")
+
+    if pd.notna(close_price) and pd.notna(ma10) and pd.notna(ma20) and pd.notna(ma60):
+        close_price = float(close_price)
+        ma10 = float(ma10)
+        ma20 = float(ma20)
+        ma60 = float(ma60)
+
+        entry = round(ma10 * 1.005, 2)
+        sl = round(ma20 * 0.98, 2)
+        risk = entry - sl
+        tp = round(entry + risk * 2, 2) if risk > 0 else 0
+        rr = round((tp - entry) / risk, 2) if risk > 0 else 0
+
+        snipe_col1, snipe_col2, snipe_col3, snipe_col4 = st.columns(4)
+
+        snipe_col1.metric("進場觀察價", f"{entry}")
+        snipe_col2.metric(
+            "停損觀察價 SL",
+            f"{sl}",
+            delta=f"{round((sl - entry) / entry * 100, 1)}%" if entry else None,
+        )
+        snipe_col3.metric(
+            "停利觀察價 TP",
+            f"{tp}",
+            delta=f"+{round((tp - entry) / entry * 100, 1)}%" if entry and tp else None,
+        )
+        snipe_col4.metric("風報比 RR", f"1 : {rr}")
+
+        st.divider()
+
+        # Fibonacci 回測進場區
+        if not price_chart_df.empty:
+            fib_df = price_chart_df.tail(60).copy()
+            fib_high = float(fib_df["High"].max())
+            fib_low = float(fib_df["Low"].min())
+            fib_range = fib_high - fib_low
+
+            f382 = round(fib_high - fib_range * 0.382, 2)
+            f500 = round(fib_high - fib_range * 0.500, 2)
+            f618 = round(fib_high - fib_range * 0.618, 2)
+
+            st.markdown("**Fibonacci 回測參考區（近 60 日波段）**")
+            fib_col1, fib_col2, fib_col3, fib_col4 = st.columns(4)
+            fib_col1.metric("波段高點", f"{fib_high}")
+            fib_col2.metric("0.382 淺回測", f"{f382}")
+            fib_col3.metric("0.500 中回測", f"{f500}")
+            fib_col4.metric("0.618 深回測", f"{f618}")
+
+            # 判斷目前收盤價落在哪個 Fibo 區間
+            if close_price >= f382:
+                fib_note = f"目前收盤價 {close_price} 尚未回測到 0.382（{f382}），尚在強勢區，等回測再考慮進場。"
+                st.info(fib_note)
+            elif f382 > close_price >= f500:
+                fib_note = f"目前收盤價 {close_price} 落在 0.382–0.500 區間，屬強勢回測，可搭配均線支撐考慮進場。"
+                st.success(fib_note)
+            elif f500 > close_price >= f618:
+                fib_note = f"目前收盤價 {close_price} 落在 0.500–0.618 區間，屬中性回測，需確認止跌訊號再進場。"
+                st.warning(fib_note)
+            else:
+                fib_note = f"目前收盤價 {close_price} 已跌破 0.618（{f618}），波段結構偏弱，不建議進場。"
+                st.error(fib_note)
+
+            # Fibo 與均線重疊提示
+            overlap_notes = []
+            for fib_val, fib_name in [(f382, "0.382"), (f500, "0.500"), (f618, "0.618")]:
+                for ma_val, ma_name in [(ma10, "MA10"), (ma20, "MA20"), (ma60, "MA60")]:
+                    if abs(fib_val - ma_val) / ma_val < 0.015:
+                        overlap_notes.append(f"{fib_name}（{fib_val}）與 {ma_name}（{round(ma_val,2)}）重疊 → 強支撐區")
+            if overlap_notes:
+                st.success("均線與 Fibo 重疊偵測：" + "　".join(overlap_notes))
+
+            st.caption(f"Fibo 計算基準：近 60 日高點 {fib_high} / 低點 {fib_low}")
+
+        st.divider()
+
+        if close_price > ma60:
+            st.success("位置：站上季線，結構相對健康。")
+        else:
+            st.warning("位置：季線以下，結構偏弱，需降低追價衝動。")
+
+        if ma10 > ma20 > ma60:
+            st.success("趨勢：均線多頭排列，方向偏上。")
+        elif ma10 < ma20:
+            st.warning("趨勢：短均線弱於中期均線，方向偏保守。")
+        else:
+            st.warning("趨勢：均線糾結，方向尚未明確。")
+
+        if risk <= 0:
+            st.error("目前進場觀察價低於或接近停損價，風險結構不合理，暫不適合用這組點位。")
+        elif rr < 2:
+            st.warning(f"風報比目前為 1 : {rr}，低於 1 : 2，等待更好的價格會比較安全。")
+        else:
+            st.success(f"風報比目前為 1 : {rr}，符合 1 : 2 以上的基本觀察條件。")
+
+        st.caption("提醒：此區塊僅為技術面觀察用，不構成買賣建議。實際操作仍需搭配籌碼、量能、支撐壓力與大盤風險。")
+
+    else:
+        st.info("仍然缺少收盤價或 MA10 / MA20 / MA60，無法計算狙擊點位。")
+
+
 st.markdown("### 近期新聞標註")
 
 _news_direction = stock_row.get('新聞傾向', '')
